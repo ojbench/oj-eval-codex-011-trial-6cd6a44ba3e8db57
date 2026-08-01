@@ -19,6 +19,17 @@ private:
 		explicit node(const T &v) : value(v), left(nullptr), right(nullptr), dist(1) {}
 	};
 
+	struct rollback_entry {
+		node *target;
+		node *left;
+		node *right;
+		int dist;
+		rollback_entry *prev;
+
+		explicit rollback_entry(node *p, rollback_entry *previous)
+			: target(p), left(p->left), right(p->right), dist(p->dist), prev(previous) {}
+	};
+
 	node *root;
 	size_t node_count;
 	Compare cmp;
@@ -50,7 +61,26 @@ private:
 		return copy;
 	}
 
-	node *merge_nodes(node *a, node *b) {
+	static void release_log(rollback_entry *log) {
+		while (log != nullptr) {
+			rollback_entry *previous = log->prev;
+			delete log;
+			log = previous;
+		}
+	}
+
+	static void rollback(rollback_entry *log) {
+		while (log != nullptr) {
+			log->target->left = log->left;
+			log->target->right = log->right;
+			log->target->dist = log->dist;
+			rollback_entry *previous = log->prev;
+			delete log;
+			log = previous;
+		}
+	}
+
+	node *merge_nodes_impl(node *a, node *b, rollback_entry *&log) {
 		if (a == nullptr) return b;
 		if (b == nullptr) return a;
 		if (cmp(a->value, b->value)) {
@@ -58,7 +88,9 @@ private:
 			a = b;
 			b = tmp;
 		}
-		a->right = merge_nodes(a->right, b);
+		rollback_entry *snapshot = new rollback_entry(a, log);
+		log = snapshot;
+		a->right = merge_nodes_impl(a->right, b, log);
 		if (distance(a->left) < distance(a->right)) {
 			node *tmp = a->left;
 			a->left = a->right;
@@ -66,6 +98,18 @@ private:
 		}
 		a->dist = distance(a->right) + 1;
 		return a;
+	}
+
+	node *merge_nodes(node *a, node *b) {
+		rollback_entry *log = nullptr;
+		try {
+			node *result = merge_nodes_impl(a, b, log);
+			release_log(log);
+			return result;
+		} catch (...) {
+			rollback(log);
+			throw;
+		}
 	}
 
 	void clear() {
@@ -89,12 +133,13 @@ public:
 		if (this == &other) return *this;
 		priority_queue temp(other);
 		Compare new_cmp(temp.cmp);
-		clear();
+		cmp = new_cmp;
+		node *old_root = root;
+		size_t old_count = node_count;
 		root = temp.root;
 		node_count = temp.node_count;
-		cmp = new_cmp;
-		temp.root = nullptr;
-		temp.node_count = 0;
+		temp.root = old_root;
+		temp.node_count = old_count;
 		return *this;
 	}
 
